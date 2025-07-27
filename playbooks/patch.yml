@@ -1,0 +1,144 @@
+---
+- name: System Patching Playbook
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  vars:
+    reboot_required: false
+    patch_log_file: "/var/log/ansible-patch.log"
+
+  pre_tasks:
+    - name: Create patch log file
+      file:
+        path: "{{ patch_log_file }}"
+        state: touch
+        mode: "0644"
+
+    - name: Log patch start time
+      lineinfile:
+        path: "{{ patch_log_file }}"
+        line: "Patch started at {{ ansible_date_time.iso8601 }} on {{ inventory_hostname }}"
+
+  tasks:
+    # Ubuntu/Debian systems
+    - name: Update apt cache (Ubuntu/Debian)
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+
+    - name: Upgrade all packages (Ubuntu/Debian)
+      apt:
+        upgrade: dist
+        autoremove: yes
+        autoclean: yes
+      when: ansible_os_family == "Debian"
+      register: apt_upgrade_result
+
+    # RHEL/CentOS systems
+    - name: Update all packages (RHEL/CentOS)
+      yum:
+        name: "*"
+        state: latest
+        update_cache: yes
+      when: ansible_os_family == "RedHat"
+      register: yum_upgrade_result
+
+    # Check if reboot is required
+    - name: Check if reboot is required (Ubuntu/Debian)
+      stat:
+        path: /var/run/reboot-required
+      register: reboot_required_file
+      when: ansible_os_family == "Debian"
+
+    - name: Set reboot flag (Ubuntu/Debian)
+      set_fact:
+        reboot_required: true
+      when:
+        - ansible_os_family == "Debian"
+        - reboot_required_file.stat.exists
+
+    - name: Check if reboot is required (RHEL/CentOS)
+      shell: needs-restarting -r
+      register: needs_restart
+      failed_when: needs_restart.rc not in [0, 1]
+      when: ansible_os_family == "RedHat"
+
+    - name: Set reboot flag (RHEL/CentOS)
+      set_fact:
+        reboot_required: true
+      when:
+        - ansible_os_family == "RedHat"
+        - needs_restart.rc == 1
+
+    # Security updates only (optional task)
+    - name: Install security updates only (Ubuntu/Debian)
+      shell: unattended-upgrade -d
+      when:
+        - ansible_os_family == "Debian"
+        - security_only is defined and security_only
+
+    - name: Install security updates only (RHEL/CentOS)
+      yum:
+        name: "*"
+        state: latest
+        security: yes
+      when:
+        - ansible_os_family == "RedHat"
+        - security_only is defined and security_only
+
+    # Log results
+    - name: Log upgrade results (Ubuntu/Debian)
+      lineinfile:
+        path: "{{ patch_log_file }}"
+        line: "{{ apt_upgrade_result.stdout_lines | join('\n') }}"
+      when:
+        - ansible_os_family == "Debian"
+        - apt_upgrade_result is defined
+
+    - name: Log upgrade results (RHEL/CentOS)
+      lineinfile:
+        path: "{{ patch_log_file }}"
+        line: "{{ yum_upgrade_result.results | join('\n') }}"
+      when:
+        - ansible_os_family == "RedHat"
+        - yum_upgrade_result is defined
+
+  post_tasks:
+    - name: Log patch completion time
+      lineinfile:
+        path: "{{ patch_log_file }}"
+        line: "Patch completed at {{ ansible_date_time.iso8601 }} on {{ inventory_hostname }}"
+
+    - name: Display reboot status
+      debug:
+        msg: "Reboot required: {{ reboot_required }}"
+
+    - name: Reboot system if required
+      reboot:
+        msg: "Rebooting after system updates"
+        reboot_timeout: 300
+        pre_reboot_delay: 10
+      when:
+        - reboot_required
+        - auto_reboot is defined and auto_reboot
+
+    - name: Wait for system to come back online
+      wait_for_connection:
+        delay: 30
+        timeout: 300
+      when:
+        - reboot_required
+        - auto_reboot is defined and auto_reboot
+
+  handlers:
+    - name: restart services
+      service:
+        name: "{{ item }}"
+        state: restarted
+      loop:
+        - nginx
+        - apache2
+        - httpd
+      ignore_errors: yes

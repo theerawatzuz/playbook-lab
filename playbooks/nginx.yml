@@ -1,0 +1,37 @@
+---
+- name: Install Nginx on Ubuntu 24.04
+  hosts: webservers
+  gather_facts: yes
+  become: yes
+
+  tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: yes
+        cache_valid_time: 3600 # Update cache if it's older than 1 hour
+
+    - name: Install Nginx package
+      ansible.builtin.apt:
+        name: nginx
+        state: present
+
+    - name: Ensure Nginx service is running and enabled at boot
+      ansible.builtin.service:
+        name: nginx
+        state: started
+        enabled: yes
+
+    - name: Allow Nginx HTTP traffic through UFW (if UFW is active)
+      community.general.ufw:
+        rule: allow
+        name: Nginx HTTP
+      ignore_errors: true # Ignore if ufw is not installed or active
+
+    - name: Display Nginx status
+      ansible.builtin.command: systemctl status nginx
+      register: nginx_status_output
+      changed_when: false # This task doesn't change system state
+
+    - name: Print Nginx status
+      ansible.builtin.debug:
+        var: nginx_status_output.stdout_lines
